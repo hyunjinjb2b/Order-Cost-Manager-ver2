@@ -1,0 +1,363 @@
+import React, { useCallback, useEffect, useState } from 'react';
+
+interface RpaBusiness {
+  사업장명: string;
+  사업장관리번호: string;
+  훈련인원: number;
+  신청금액: number;
+  전자계산서: string;
+  수납확인서: string;
+}
+
+interface RpaRound {
+  folder: string;
+  과정명: string;
+  회차: string;
+  사업장: number;
+  사업장내역?: RpaBusiness[];
+  첨부: string[];
+  정리: string;
+  올리기: string;
+  오류: string;
+}
+
+interface RpaState {
+  busy: boolean;
+  label: string;
+  hrdnet: string[];
+  kpi: Record<string, number>;
+  rounds: RpaRound[];
+}
+
+interface BackupItem {
+  name: string;
+  path: string;
+  시각: string;
+  회차: { folder: string; 회차: string; 사업장: number; 신청금액: number; 상태: string; 끝: string }[];
+  파일: number;
+  MB: number;
+  장기보관: boolean;
+  삭제예정: string;
+}
+
+interface BackupList {
+  root: string;
+  keep_days: number;
+  archive_root: string;
+  items: BackupItem[];
+}
+
+type Mode = 'simulate' | 'dry-run' | 'fill' | 'live';
+
+const MODES: { id: Mode; label: string; hint: string; flag: string }[] = [
+  { id: 'simulate', label: '모의 실행', hint: 'HRD-Net 없이 순서만 훑기', flag: '--simulate' },
+  { id: 'dry-run', label: '점검', hint: '화면에서 버튼을 찾기만 하고 누르지 않기', flag: '--dry-run' },
+  { id: 'fill', label: '미리 채워 보기', hint: '최종 신청 직전까지 채우고 멈추기', flag: '--fill' },
+  { id: 'live', label: '신청', hint: '실제 신청. 회차마다 패널에서 사람이 최종 확인', flag: '' },
+];
+
+interface RpaClaimViewProps {
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
+}
+
+export const RpaClaimView: React.FC<RpaClaimViewProps> = ({ onShowToast }) => {
+  const [state, setState] = useState<RpaState | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [backups, setBackups] = useState<BackupList | null>(null);
+  const [withTest, setWithTest] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const refresh = useCallback(async () => {
+    if (!window.rpaApi) return;
+    const res = await window.rpaApi.call({ path: '/api/state' });
+    if (res.ok && res.data) {
+      setState(res.data as RpaState);
+      setOffline(false);
+      const bk = await window.rpaApi.call({ path: '/api/backups' });
+      if (bk.ok && bk.data) setBackups(bk.data as BackupList);
+    } else {
+      setOffline(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  const rounds = state?.rounds ?? [];
+  const ready = rounds.filter((r) => r.정리 === '준비완료');
+
+  const run = async (args: string[], okMessage: string) => {
+    if (!window.rpaApi) return;
+    const res = await window.rpaApi.call({ method: 'POST', path: '/api/run', body: { args } });
+    if (res.ok) onShowToast?.(okMessage, 'info');
+    else onShowToast?.(res.error || '실행하지 못했습니다.', 'error');
+    void refresh();
+  };
+
+  const openPanel = async () => {
+    const res = await window.rpa?.launch();
+    onShowToast?.(res?.ok ? '사이드 패널을 열었습니다.' : res?.reason || '사이드 패널을 열지 못했습니다.', res?.ok ? 'success' : 'error');
+    void refresh();
+  };
+
+  const makeResult = async () => {
+    await run(['result'], '결과표를 만들었습니다. 잠시 뒤 결과 폴더가 열립니다.');
+    window.setTimeout(() => void window.rpa?.openResults(), 3000);
+  };
+
+  const backup = async (includeTest: boolean) => {
+    const what = includeTest ? '신청 성공 + 모의·점검·채움까지 끝난' : '신청 성공한';
+    if (!window.confirm(`${what} 회차의 파일을 백업 폴더로 옮깁니다.
+지우지 않고 옮기기만 하며, 결과표와 아직 안 끝난 회차는 그대로 둡니다.`)) return;
+    await run(includeTest ? ['backup', '--include-test'] : ['backup'], '백업을 시작했습니다. 잠시 뒤 백업 폴더가 열립니다.');
+    window.setTimeout(() => void window.rpa?.openBackup(), 3000);
+  };
+
+  const organize = () => run(['organize'], '정리를 시작했습니다. 오른쪽 패널에서 진행을 볼 수 있어요.');
+
+  const start = (mode: (typeof MODES)[number]) => {
+    const folders = ready.filter((r) => picked.has(r.folder)).map((r) => r.folder);
+    if (folders.length === 0) {
+      onShowToast?.('실행할 회차를 체크하세요. (증빙누락 회차는 고를 수 없습니다)', 'info');
+      return;
+    }
+    if (mode.id === 'live' && !window.confirm(`${folders.length}개 회차를 실제로 신청 진행합니다.\n회차마다 오른쪽 패널에서 최종 확인을 눌러야 신청됩니다.`)) return;
+    const args = ['upload-all', `--only=${folders.join(',')}`];
+    if (mode.flag) args.push(mode.flag);
+    void run(args, `${mode.label}을 시작했습니다. 오른쪽 패널을 보세요.`);
+  };
+
+  const toggle = (folder: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      return next;
+    });
+
+  const toggleDetail = (folder: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(folder)) next.delete(folder);
+      else next.add(folder);
+      return next;
+    });
+
+  const formatMoney = (value: number) => `${Number(value || 0).toLocaleString('ko-KR')}원`;
+
+  const allOn = ready.length > 0 && ready.every((r) => picked.has(r.folder));
+
+  return (
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" style={{ minHeight: '70vh' }}>
+      <div className="border-b border-slate-200 px-5 py-4">
+        <h2 className="text-base font-bold text-slate-900">HRD-Net 비용신청</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          순서: ① 통합 DATA 시트에서 「HRD-Net 비용신청 올리기」 → ② 여기서 「▶ 정리」 → ③ 회차를 체크하고 단계 실행 → ④ 「4 결과표」.
+          진행과 질문(사람이 눌러야 할 곳)은 오른쪽 패널에 뜹니다.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3 text-xs">
+        <span className={`inline-flex items-center gap-1 ${state?.hrdnet.length ? 'text-emerald-700' : 'text-rose-600'}`}>
+          ● {state?.hrdnet.length ? 'HRD-Net 창 있음' : 'HRD-Net 창 없음'}
+        </span>
+        <span className="text-slate-300">|</span>
+        <span className={state?.busy ? 'text-amber-600' : 'text-emerald-700'}>
+          ● {state?.busy ? `실행 중: ${state.label}` : '대기'}
+        </span>
+        {offline && <span className="text-rose-600">엔진에 연결되지 않았습니다. 「사이드 패널 열기」를 먼저 누르세요.</span>}
+        <div className="ml-auto flex gap-2">
+          <button type="button" onClick={() => void openPanel()}
+            className="rounded-lg border border-indigo-300 bg-white px-3 py-1 font-semibold text-indigo-700 hover:bg-indigo-50">
+            사이드 패널 열기
+          </button>
+          <button type="button" onClick={organize} disabled={offline || state?.busy}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40">
+            ▶ 정리 (내보낸 증빙을 회차별로 묶기)
+          </button>
+          <button type="button" onClick={() => void backup(withTest)} disabled={offline || state?.busy}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+            title="신청 성공한 회차의 파일을 지우지 않고 백업 폴더로 옮깁니다. 오른쪽 체크를 켜면 모의·점검·채움 회차도 포함합니다.">
+            백업·정리
+          </button>
+          <label className="flex items-center gap-1 text-[11px] text-slate-600" title="연습(모의 실행 등)으로 끝난 회차도 백업으로 옮깁니다. 영상·시험 데이터를 정리할 때 켭니다.">
+            <input type="checkbox" checked={withTest} onChange={(e) => setWithTest(e.target.checked)} />
+            모의·점검 회차도
+          </label>
+          <button type="button" onClick={makeResult} disabled={offline || state?.busy}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+            title="오늘 실행한 기록을 결과표(엑셀)와 완료처리 대상(CSV)으로 만들고 폴더를 엽니다.">
+            4 결과표
+          </button>
+          <button type="button" onClick={() => void window.rpaApi?.call({ method: 'POST', path: '/api/stop', body: {} })}
+            className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-700 hover:bg-rose-100">
+            ■ 멈춤
+          </button>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto px-5 py-3">
+        <table className="w-full text-left text-xs">
+          <thead className="sticky top-0 bg-white text-slate-500">
+            <tr className="border-b border-slate-200">
+              <th className="w-8 py-2">
+                <input type="checkbox" checked={allOn}
+                  onChange={() => setPicked(allOn ? new Set() : new Set(ready.map((r) => r.folder)))} />
+              </th>
+              <th className="py-2">과정</th>
+              <th className="py-2">회차</th>
+              <th className="py-2">사업장</th>
+              <th className="py-2">증빙</th>
+              <th className="py-2">정리</th>
+              <th className="py-2">올리기 결과</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rounds.length === 0 && (
+              <tr>
+                <td colSpan={7} className="py-8 text-center text-slate-400">
+                  아직 정리된 회차가 없습니다. 위의 「▶ 정리」를 누르세요.
+                </td>
+              </tr>
+            )}
+            {rounds.map((r) => {
+              const ok = r.정리 === '준비완료';
+              const isExpanded = expanded.has(r.folder);
+              const businesses = r.사업장내역 ?? [];
+              return (
+                <React.Fragment key={r.folder}>
+                  <tr className={`border-b border-slate-100 ${isExpanded ? 'bg-indigo-50/40' : ''}`}>
+                    <td className="py-1.5">
+                      <input type="checkbox" disabled={!ok} checked={picked.has(r.folder)} onChange={() => toggle(r.folder)} />
+                    </td>
+                    <td className="max-w-[18rem] truncate py-1.5" title={r.과정명}>{r.과정명}</td>
+                    <td className="py-1.5">{r.회차}</td>
+                    <td className="py-1.5">
+                      <button type="button" onClick={() => toggleDetail(r.folder)}
+                        className="rounded px-1.5 py-0.5 font-semibold text-indigo-700 hover:bg-indigo-100"
+                        aria-expanded={isExpanded} title="사업장 세부 내역 보기">
+                        {isExpanded ? '▾' : '▸'} {r.사업장}곳
+                      </button>
+                    </td>
+                    <td className="py-1.5">{r.첨부.join(' · ') || '-'}</td>
+                    <td className={`py-1.5 font-semibold ${ok ? 'text-emerald-700' : 'text-rose-600'}`}>{r.정리}</td>
+                    <td className="py-1.5" title={r.오류}>{r.올리기}</td>
+                  </tr>
+                  {isExpanded && (
+                    <tr className="border-b border-indigo-100 bg-indigo-50/30">
+                      <td colSpan={7} className="px-8 py-3">
+                        {businesses.length === 0 ? (
+                          <p className="text-slate-400">사업장 상세 데이터가 없습니다. RPA 엔진을 다시 실행해 주세요.</p>
+                        ) : (
+                          <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                            <table className="w-full min-w-[760px] text-left text-[11px]">
+                              <thead className="bg-slate-50 text-slate-500">
+                                <tr>
+                                  <th className="px-3 py-2">번호</th>
+                                  <th className="px-3 py-2">업체명</th>
+                                  <th className="px-3 py-2">사업장관리번호</th>
+                                  <th className="px-3 py-2 text-right">훈련인원</th>
+                                  <th className="px-3 py-2 text-right">신청금액</th>
+                                  <th className="px-3 py-2">전자계산서</th>
+                                  <th className="px-3 py-2">수납확인서</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {businesses.map((business, index) => (
+                                  <tr key={`${business.사업장관리번호}-${business.사업장명}-${index}`} className="border-t border-slate-100">
+                                    <td className="px-3 py-2 text-slate-400">{index + 1}</td>
+                                    <td className="px-3 py-2 font-semibold text-slate-800">{business.사업장명 || '-'}</td>
+                                    <td className="px-3 py-2 font-mono text-slate-600">{business.사업장관리번호 || '-'}</td>
+                                    <td className="px-3 py-2 text-right">{Number(business.훈련인원 || 0).toLocaleString('ko-KR')}명</td>
+                                    <td className="px-3 py-2 text-right font-semibold">{formatMoney(business.신청금액)}</td>
+                                    <td className="max-w-[13rem] truncate px-3 py-2" title={business.전자계산서}>
+                                      <span className={business.전자계산서 ? 'text-emerald-700' : 'text-rose-600'}>
+                                        {business.전자계산서 ? `✓ ${business.전자계산서}` : '누락'}
+                                      </span>
+                                    </td>
+                                    <td className="max-w-[13rem] truncate px-3 py-2" title={business.수납확인서}>
+                                      <span className={business.수납확인서 ? 'text-emerald-700' : 'text-rose-600'}>
+                                        {business.수납확인서 ? `✓ ${business.수납확인서}` : '누락'}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        {rounds.some((r) => r.정리 === '증빙누락') && (
+          <p className="mt-2 text-[11px] text-rose-600">
+            증빙누락 회차는 전자계산서 PDF가 없습니다. 위하고 출력본을 증빙 폴더에 넣고 「▶ 정리」를 다시 누르세요.
+          </p>
+        )}
+      </div>
+
+      <div className="border-t border-slate-200 px-5 py-3">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-bold text-slate-800">백업 보관함</span>
+          <span className="text-slate-500">
+            {backups ? `${backups.items.length}건 · 보관 ${backups.keep_days > 0 ? `${backups.keep_days}일` : '삭제 안 함'}` : ''}
+            {backups?.archive_root ? ` · 장기 보관처: ${backups.archive_root}` : ' · 장기 보관처 미지정(local.json의 archive_root)'}
+          </span>
+          <button type="button" onClick={() => void window.rpa?.openBackup()}
+            className="ml-auto rounded-lg border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-50">
+            백업 폴더 열기
+          </button>
+        </div>
+        {backups && backups.items.length === 0 && (
+          <p className="text-[11px] text-slate-400">아직 백업이 없습니다. 위의 「백업·정리」를 누르면 끝난 회차가 여기에 쌓입니다.</p>
+        )}
+        <div className="max-h-56 space-y-2 overflow-auto">
+          {backups?.items.map((b) => (
+            <details key={b.name} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+              <summary className="cursor-pointer select-none">
+                <span className="font-semibold text-slate-800">{b.시각}</span>
+                <span className="ml-2 text-slate-600">회차 {b.회차.length}개 · 파일 {b.파일}개 · {b.MB}MB</span>
+                <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold ${b.장기보관 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                  {b.장기보관 ? '장기 보관 완료' : '장기 보관 전'}
+                </span>
+                {b.삭제예정 && <span className="ml-2 text-slate-400">삭제 예정 {b.삭제예정}</span>}
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {b.회차.map((r) => (
+                  <li key={r.folder} className="flex flex-wrap gap-x-3 text-slate-700">
+                    <span className="max-w-[26rem] truncate" title={r.folder}>{r.folder}</span>
+                    <span>{r.사업장}곳</span>
+                    <span className="font-semibold">{r.상태 || '-'}</span>
+                    <span className="text-slate-400">{r.끝}</span>
+                  </li>
+                ))}
+                <li className="pt-1 font-mono text-[10px] text-slate-400">{b.path}</li>
+              </ul>
+            </details>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">
+        <span className="text-xs text-slate-500">{picked.size}개 회차 선택 →</span>
+        {MODES.map((m) => (
+          <button key={m.id} type="button" title={m.hint} onClick={() => start(m)} disabled={offline || state?.busy}
+            className={`rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-40 ${
+              m.id === 'live' ? 'bg-indigo-700 text-white hover:bg-indigo-600'
+              : m.id === 'fill' ? 'bg-teal-700 text-white hover:bg-teal-600'
+              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'}`}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,13 @@
+{
+  "name": "order-cost-preview-opener",
+  "displayName": "Order Cost Preview Opener",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "name": "order-cost-manager",
+  "private": true,
+  "version": "2.1.0",
+  "description": "수주, 비용, 계산서 및 입금 내역 통합 관리 프로그램",
+  "author": "UBION",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node ./node_modules/vite/bin/vite.js --configLoader runner --port=3000 --host=0.0.0.0",
+    "build": "node ./node_modules/vite/bin/vite.js --configLoader runner build",
+    "desktop:dir": "npm run build && node ./node_modules/electron-builder/cli.js --win dir --x64",
+    "desktop:build": "node ./scripts/build-portable.cjs",
+    "preview": "node ./node_modules/vite/bin/vite.js --configLoader runner preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "node ./node_modules/typescript/bin/tsc --noEmit"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "lucide-react": "^0.546.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "autoprefixer": "^10.4.21",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  },
+  "build": {
+    "appId": "kr.co.ubion.order-cost-manager",
+    "productName": "수주 및 비용 통합 관리 프로그램",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Order-Cost-Manager-Portable-${version}.${ext}"
+    }
+  }
+}

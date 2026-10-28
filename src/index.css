@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+@media print {
+  html,
+  body,
+  #root,
+  #workspace-app {
+    min-height: 0 !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  body {
+    background-color: white !important;
+    color: black !important;
+    font-size: 12pt;
+  }
+
+  #workspace-app.team-manual-open > :not(#team-manual-modal),
+  #root > :not(#workspace-app) {
+    display: none !important;
+  }
+
+  #team-manual-modal {
+    position: static !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    background: transparent !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  #team-manual-modal > div {
+    display: block !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+  }
+
+  @page {
+    margin: 15mm 15mm 15mm 15mm;
+    size: A4 portrait;
+  }
+}
